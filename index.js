@@ -1,4 +1,3 @@
-
 console.log("BOT STARTING...");
 
 const express = require("express");
