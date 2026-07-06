@@ -1,17 +1,18 @@
 const express = require("express");
 const mongoose = require("mongoose");
-const { Client, GatewayIntentBits } = require("discord.js");
+const { Client, GatewayIntentBits, Collection } = require("discord.js");
 
-// ---------------- EXPRESS (Render keep-alive)
+// ---------------- KEEP RENDER ALIVE
 const app = express();
-app.get("/", (req, res) => res.send("Bot is running"));
+app.get("/", (req, res) => res.send("Invite bot running"));
 app.listen(process.env.PORT || 3000);
 
-// ---------------- MONGOOSE
+// ---------------- DB CONNECT
 mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log("MongoDB connected"))
   .catch(console.error);
 
+// ---------------- DATABASE MODEL
 const inviteSchema = new mongoose.Schema({
   userId: { type: String, unique: true },
   invites: { type: Number, default: 0 }
@@ -19,7 +20,7 @@ const inviteSchema = new mongoose.Schema({
 
 const Invite = mongoose.model("Invite", inviteSchema);
 
-// ---------------- DISCORD CLIENT
+// ---------------- BOT
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -28,34 +29,38 @@ const client = new Client({
   ]
 });
 
-// guildId -> invites cache
+// cache: guildId -> Map(inviteCode -> uses)
 const inviteCache = new Map();
 
-// ---------------- READY EVENT
+// ---------------- READY
 client.once("clientReady", async () => {
   console.log(`Logged in as ${client.user.tag}`);
 
-  await refreshAllInvites();
-});
-
-// ---------------- REFRESH INVITES (IMPORTANT FIX)
-async function refreshAllInvites() {
   for (const guild of client.guilds.cache.values()) {
     try {
       const invites = await guild.invites.fetch();
-      inviteCache.set(guild.id, new Map(invites.map(i => [i.code, i.uses])));
-    } catch (err) {
-      console.log(`Failed to fetch invites for ${guild.name}`);
-    }
+      inviteCache.set(
+        guild.id,
+        new Map(invites.map(i => [i.code, i.uses]))
+      );
+    } catch {}
   }
+});
+
+// ---------------- UPDATE CACHE
+async function updateCache(guild) {
+  const invites = await guild.invites.fetch();
+  inviteCache.set(
+    guild.id,
+    new Map(invites.map(i => [i.code, i.uses]))
+  );
 }
 
 // ---------------- TRACK INVITES
 client.on("guildMemberAdd", async (member) => {
   const guild = member.guild;
 
-  let oldInvites = inviteCache.get(guild.id);
-  if (!oldInvites) oldInvites = new Map();
+  const oldInvites = inviteCache.get(guild.id) || new Map();
 
   let newInvites;
   try {
@@ -64,39 +69,55 @@ client.on("guildMemberAdd", async (member) => {
     return;
   }
 
-  inviteCache.set(guild.id, new Map(newInvites.map(i => [i.code, i.uses])));
+  const newCache = new Map(newInvites.map(i => [i.code, i.uses]));
+  inviteCache.set(guild.id, newCache);
 
-  const usedInvite = newInvites.find(inv => {
-    const oldUses = oldInvites.get(inv.code) || 0;
-    return inv.uses > oldUses;
+  const used = newInvites.find(inv => {
+    return (oldInvites.get(inv.code) || 0) < inv.uses;
   });
 
-  if (!usedInvite || !usedInvite.inviter) return;
+  if (!used || !used.inviter) return;
 
-  const inviterId = usedInvite.inviter.id;
+  const userId = used.inviter.id;
 
-  // ---------------- SAVE TO MONGODB (SAFE UPSERT)
   await Invite.findOneAndUpdate(
-    { userId: inviterId },
+    { userId },
     { $inc: { invites: 1 } },
-    { upsert: true, new: true }
+    { upsert: true }
   );
 
-  const updated = await Invite.findOne({ userId: inviterId });
+  console.log(`${userId} got +1 invite`);
+});
 
-  console.log(`${inviterId} now has ${updated.invites} invites`);
+// ---------------- SLASH COMMANDS
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
 
-  // ---------------- ROLE REWARD
-  if (updated.invites === 3) {
-    const role = guild.roles.cache.find(r => r.name === "Met Requirement");
-    if (!role) return;
+  // /invites
+  if (interaction.commandName === "invites") {
+    const user = interaction.options.getUser("user") || interaction.user;
 
-    try {
-      const user = await guild.members.fetch(inviterId);
-      await user.roles.add(role);
-    } catch (err) {
-      console.log("Role error:", err);
-    }
+    const data = await Invite.findOne({ userId: user.id });
+
+    return interaction.reply({
+      content: `${user.username} has **${data?.invites || 0} invites**`
+    });
+  }
+
+  // /leaderboard
+  if (interaction.commandName === "leaderboard") {
+    const top = await Invite.find({})
+      .sort({ invites: -1 })
+      .limit(10);
+
+    const list = await Promise.all(
+      top.map(async (u, i) => {
+        const user = await client.users.fetch(u.userId).catch(() => null);
+        return `${i + 1}. ${user?.username || "Unknown"} — ${u.invites}`;
+      })
+    );
+
+    return interaction.reply("🏆 **Invite Leaderboard**\n" + list.join("\n"));
   }
 });
 
