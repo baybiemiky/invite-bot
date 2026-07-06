@@ -1,8 +1,16 @@
+console.log("BOT FILE STARTED");
+
 const express = require("express");
 const mongoose = require("mongoose");
-const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder } = require("discord.js");
+const {
+  Client,
+  GatewayIntentBits,
+  REST,
+  Routes,
+  SlashCommandBuilder
+} = require("discord.js");
 
-// ---------------- EXPRESS
+// ---------------- EXPRESS (Render keep alive)
 const app = express();
 app.get("/", (req, res) => res.send("Invite bot running"));
 app.listen(process.env.PORT || 3000);
@@ -10,9 +18,9 @@ app.listen(process.env.PORT || 3000);
 // ---------------- MONGO
 mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log("MongoDB connected"))
-  .catch(console.error);
+  .catch(err => console.log("Mongo error:", err));
 
-// ---------------- DB
+// ---------------- DATABASE
 const inviteSchema = new mongoose.Schema({
   userId: { type: String, unique: true },
   invites: { type: Number, default: 0 }
@@ -20,23 +28,22 @@ const inviteSchema = new mongoose.Schema({
 
 const Invite = mongoose.model("Invite", inviteSchema);
 
-// ---------------- CLIENT
+// ---------------- DISCORD CLIENT
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildInvites
+    GatewayIntentBits.GuildMembers
   ]
 });
 
-// ---------------- CACHE
+// ---------------- INVITE CACHE
 const inviteCache = new Map();
 
 // ---------------- SLASH COMMANDS
 const commands = [
   new SlashCommandBuilder()
     .setName("invites")
-    .setDescription("Check your invites")
+    .setDescription("Check invites")
     .addUserOption(opt =>
       opt.setName("user").setDescription("User").setRequired(false)
     ),
@@ -46,19 +53,22 @@ const commands = [
     .setDescription("Top inviters")
 ].map(c => c.toJSON());
 
-// ---------------- READY
+// ---------------- READY EVENT
 client.once("clientReady", async () => {
   console.log(`Logged in as ${client.user.tag}`);
 
-  // register slash commands
-  const rest = new REST({ version: "10" }).setToken(process.env.TOKEN);
+  try {
+    const rest = new REST({ version: "10" }).setToken(process.env.TOKEN);
 
-  await rest.put(
-    Routes.applicationCommands(client.user.id),
-    { body: commands }
-  );
+    await rest.put(
+      Routes.applicationCommands(client.user.id),
+      { body: commands }
+    );
 
-  console.log("Slash commands registered");
+    console.log("Slash commands registered");
+  } catch (err) {
+    console.log("Slash command error:", err);
+  }
 
   // cache invites
   for (const guild of client.guilds.cache.values()) {
@@ -68,20 +78,36 @@ client.once("clientReady", async () => {
         guild.id,
         new Map(invites.map(i => [i.code, i.uses]))
       );
-    } catch {}
+    } catch (err) {
+      console.log("Invite cache error:", err);
+    }
   }
+});
+
+// ---------------- DEBUG + CONNECTION STABILITY
+client.on("debug", (info) => {
+  console.log("DEBUG:", info);
+});
+
+client.on("shardDisconnect", () => {
+  console.log("DISCONNECTED FROM DISCORD");
+});
+
+client.on("shardReconnecting", () => {
+  console.log("RECONNECTING TO DISCORD");
 });
 
 // ---------------- INVITE TRACKING
 client.on("guildMemberAdd", async (member) => {
   const guild = member.guild;
 
-  const oldInvites = inviteCache.get(guild.id) || new Map();
+  let oldInvites = inviteCache.get(guild.id) || new Map();
 
   let newInvites;
   try {
     newInvites = await guild.invites.fetch();
-  } catch {
+  } catch (err) {
+    console.log("Invite fetch failed:", err);
     return;
   }
 
@@ -104,7 +130,7 @@ client.on("guildMemberAdd", async (member) => {
     { upsert: true, new: true }
   );
 
-  console.log(`${inviterId} now has ${data.invites}`);
+  console.log(`${inviterId} now has ${data.invites} invites`);
 
   // ROLE AT 3 INVITES
   if (data.invites === 3) {
@@ -114,10 +140,13 @@ client.on("guildMemberAdd", async (member) => {
     try {
       const user = await guild.members.fetch(inviterId);
       await user.roles.add(role);
-    } catch {}
+      console.log("Role given to:", inviterId);
+    } catch (err) {
+      console.log("Role error:", err);
+    }
   }
 
-  // LOG CHANNEL (optional)
+  // LOG CHANNEL
   const log = guild.channels.cache.find(c => c.name === "invite-logs");
   if (log) {
     log.send(`${used.inviter.tag} invited ${member.user.tag}`);
@@ -128,12 +157,10 @@ client.on("guildMemberAdd", async (member) => {
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
-  // /invites
   if (interaction.commandName === "invites") {
     const user = interaction.options.getUser("user") || interaction.user;
 
     const data = await Invite.findOne({ userId: user.id });
-
     const invites = data?.invites || 0;
 
     return interaction.reply({
@@ -141,11 +168,12 @@ client.on("interactionCreate", async (interaction) => {
     });
   }
 
-  // /leaderboard
   if (interaction.commandName === "leaderboard") {
     const top = await Invite.find().sort({ invites: -1 }).limit(10);
 
-    if (!top.length) return interaction.reply("No data yet.");
+    if (!top.length) {
+      return interaction.reply("No data yet.");
+    }
 
     const msg = top.map((u, i) =>
       `**${i + 1}.** <@${u.userId}> — ${u.invites}`
@@ -155,5 +183,12 @@ client.on("interactionCreate", async (interaction) => {
   }
 });
 
-// ---------------- LOGIN
-client.login(process.env.TOKEN);
+// ---------------- LOGIN (WITH SAFETY LOGS)
+client.login(process.env.TOKEN)
+  .then(() => console.log("LOGIN SUCCESS"))
+  .catch(err => console.log("LOGIN ERROR:", err));
+
+// ---------------- KEEP ALIVE (Render stability)
+setInterval(() => {
+  console.log("KEEP ALIVE PING");
+}, 5 * 60 * 1000);
