@@ -1,4 +1,6 @@
-console.log("BOT STARTED");
+require("dotenv").config();
+
+console.log("BOT STARTING...");
 
 const express = require("express");
 const mongoose = require("mongoose");
@@ -10,12 +12,12 @@ const {
   SlashCommandBuilder
 } = require("discord.js");
 
-// ---------------- EXPRESS (Render keep-alive)
+// ---------------- EXPRESS (keep alive for hosting)
 const app = express();
 app.get("/", (req, res) => res.send("Invite bot running"));
 app.listen(process.env.PORT || 3000);
 
-// ---------------- MONGODB
+// ---------------- MONGO
 mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log("MongoDB connected"))
   .catch(err => console.log("Mongo error:", err));
@@ -40,7 +42,7 @@ const client = new Client({
 // ---------------- INVITE CACHE
 const inviteCache = new Map();
 
-// ---------------- COMMANDS
+// ---------------- SLASH COMMANDS
 const commands = [
   new SlashCommandBuilder()
     .setName("invites")
@@ -70,7 +72,7 @@ async function registerCommands() {
   }
 }
 
-// ---------------- SYNC INVITES (Render-safe)
+// ---------------- SYNC INVITES
 async function syncInvites() {
   for (const guild of client.guilds.cache.values()) {
     try {
@@ -136,26 +138,27 @@ client.on("guildMemberAdd", async (member) => {
 
   console.log(`${inviterId} now has ${data.regular} regular invites`);
 
-  // ROLE AT 3 INVITES (NET)
+  // CHECK ROLE (NET INVITES)
   const fullData = await Invite.findOne({ userId: inviterId });
 
   const net = (fullData?.regular || 0) - (fullData?.left || 0);
 
   if (net === 3) {
     const role = guild.roles.cache.find(r => r.name === "Met Requirement");
+
     if (role) {
       try {
         const user = await guild.members.fetch(inviterId);
         await user.roles.add(role);
-        console.log("Role given");
+        console.log("Role given to:", inviterId);
       } catch (err) {
         console.log("Role error:", err);
       }
     }
   }
 
-  // LOG CHANNEL
-  const log = guild.channels.cache.find(c => c.name === "invite-logs");
+  // LOG CHANNEL (optional)
+  const log = guild.channels.cache.find(c => c.name === "👤・user");
   if (log) {
     log.send(`${used.inviter.tag} invited ${member.user.tag}`);
   }
@@ -193,7 +196,9 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.commandName === "leaderboard") {
     const top = await Invite.find().sort({ regular: -1 }).limit(10);
 
-    if (!top.length) return interaction.reply("No data yet.");
+    if (!top.length) {
+      return interaction.reply("No data yet.");
+    }
 
     const msg = top.map((u, i) =>
       `**${i + 1}.** <@${u.userId}> — ${u.regular}`
@@ -208,7 +213,7 @@ client.login(process.env.TOKEN)
   .then(() => console.log("LOGIN SUCCESS"))
   .catch(err => console.log("LOGIN ERROR:", err));
 
-// ---------------- HEARTBEAT
+// ---------------- HEARTBEAT (optional debug)
 setInterval(() => {
   console.log("Bot still running...");
 }, 5 * 60 * 1000);
