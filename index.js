@@ -150,7 +150,7 @@ client.on("guildMemberAdd", async (member) => {
   }
 
   // LOG CHANNEL
-  const log = guild.channels.cache.find(c => c.name === "invite-logs");
+  const log = guild.channels.cache.find(c => c.name === "👤・user");
   if (log) {
     log.send(`${used.inviter.tag} invited ${member.user.tag}`);
   }
