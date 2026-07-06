@@ -1,4 +1,4 @@
-console.log("BOT FILE STARTED");
+console.log("BOT STARTED");
 
 const express = require("express");
 const mongoose = require("mongoose");
@@ -20,7 +20,7 @@ mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log("MongoDB connected"))
   .catch(err => console.log("Mongo error:", err));
 
-// ---------------- DATABASE
+// ---------------- DB
 const inviteSchema = new mongoose.Schema({
   userId: { type: String, unique: true },
   invites: { type: Number, default: 0 }
@@ -28,7 +28,7 @@ const inviteSchema = new mongoose.Schema({
 
 const Invite = mongoose.model("Invite", inviteSchema);
 
-// ---------------- DISCORD CLIENT
+// ---------------- CLIENT
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -39,7 +39,7 @@ const client = new Client({
 // ---------------- INVITE CACHE
 const inviteCache = new Map();
 
-// ---------------- SLASH COMMANDS
+// ---------------- COMMANDS
 const commands = [
   new SlashCommandBuilder()
     .setName("invites")
@@ -53,10 +53,26 @@ const commands = [
     .setDescription("Top inviters")
 ].map(c => c.toJSON());
 
-// ---------------- READY EVENT
-client.once("clientReady", async () => {
-  console.log(`Logged in as ${client.user.tag}`);
+// ---------------- INVITE SYNC FUNCTION
+async function syncInvites() {
+  for (const guild of client.guilds.cache.values()) {
+    try {
+      const invites = await guild.invites.fetch();
 
+      inviteCache.set(
+        guild.id,
+        new Map(invites.map(i => [i.code, i.uses]))
+      );
+
+      console.log(`Synced invites for ${guild.name}`);
+    } catch (err) {
+      console.log("Invite sync failed:", guild.name);
+    }
+  }
+}
+
+// ---------------- REGISTER COMMANDS
+async function registerCommands() {
   try {
     const rest = new REST({ version: "10" }).setToken(process.env.TOKEN);
 
@@ -67,47 +83,34 @@ client.once("clientReady", async () => {
 
     console.log("Slash commands registered");
   } catch (err) {
-    console.log("Slash command error:", err);
+    console.log("Command register error:", err);
   }
+}
 
-  // cache invites
-  for (const guild of client.guilds.cache.values()) {
-    try {
-      const invites = await guild.invites.fetch();
-      inviteCache.set(
-        guild.id,
-        new Map(invites.map(i => [i.code, i.uses]))
-      );
-    } catch (err) {
-      console.log("Invite cache error:", err);
-    }
-  }
+// ---------------- READY
+client.once("clientReady", async () => {
+  console.log(`Logged in as ${client.user.tag}`);
+
+  await registerCommands();
+  await syncInvites();
 });
 
-// ---------------- DEBUG + CONNECTION STABILITY
-client.on("debug", (info) => {
-  console.log("DEBUG:", info);
-});
-
-client.on("shardDisconnect", () => {
-  console.log("DISCONNECTED FROM DISCORD");
-});
-
-client.on("shardReconnecting", () => {
-  console.log("RECONNECTING TO DISCORD");
+// ---------------- RECONNECT SAFETY
+client.on("shardReconnecting", async () => {
+  console.log("Reconnecting... resyncing invites");
+  await syncInvites();
 });
 
 // ---------------- INVITE TRACKING
 client.on("guildMemberAdd", async (member) => {
   const guild = member.guild;
 
-  let oldInvites = inviteCache.get(guild.id) || new Map();
+  const oldInvites = inviteCache.get(guild.id) || new Map();
 
   let newInvites;
   try {
     newInvites = await guild.invites.fetch();
-  } catch (err) {
-    console.log("Invite fetch failed:", err);
+  } catch {
     return;
   }
 
@@ -130,19 +133,19 @@ client.on("guildMemberAdd", async (member) => {
     { upsert: true, new: true }
   );
 
-  console.log(`${inviterId} now has ${data.invites} invites`);
+  console.log(`${inviterId} now has ${data.invites}`);
 
   // ROLE AT 3 INVITES
   if (data.invites === 3) {
     const role = guild.roles.cache.find(r => r.name === "Met Requirement");
-    if (!role) return;
-
-    try {
-      const user = await guild.members.fetch(inviterId);
-      await user.roles.add(role);
-      console.log("Role given to:", inviterId);
-    } catch (err) {
-      console.log("Role error:", err);
+    if (role) {
+      try {
+        const user = await guild.members.fetch(inviterId);
+        await user.roles.add(role);
+        console.log("Role given");
+      } catch (err) {
+        console.log("Role error:", err);
+      }
     }
   }
 
@@ -183,12 +186,12 @@ client.on("interactionCreate", async (interaction) => {
   }
 });
 
-// ---------------- LOGIN (WITH SAFETY LOGS)
+// ---------------- LOGIN
 client.login(process.env.TOKEN)
   .then(() => console.log("LOGIN SUCCESS"))
   .catch(err => console.log("LOGIN ERROR:", err));
 
-// ---------------- KEEP ALIVE (Render stability)
+// ---------------- KEEP ALIVE
 setInterval(() => {
-  console.log("KEEP ALIVE PING");
+  console.log("Bot still running...");
 }, 5 * 60 * 1000);
