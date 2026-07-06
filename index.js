@@ -10,25 +10,26 @@ const {
   SlashCommandBuilder
 } = require("discord.js");
 
-// ---------------- EXPRESS (Render keep alive)
+// ---------------- EXPRESS (Render keep-alive)
 const app = express();
 app.get("/", (req, res) => res.send("Invite bot running"));
 app.listen(process.env.PORT || 3000);
 
-// ---------------- MONGO
+// ---------------- MONGODB
 mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log("MongoDB connected"))
   .catch(err => console.log("Mongo error:", err));
 
-// ---------------- DB
+// ---------------- DATABASE
 const inviteSchema = new mongoose.Schema({
   userId: { type: String, unique: true },
-  invites: { type: Number, default: 0 }
+  regular: { type: Number, default: 0 },
+  left: { type: Number, default: 0 }
 });
 
 const Invite = mongoose.model("Invite", inviteSchema);
 
-// ---------------- CLIENT
+// ---------------- DISCORD CLIENT
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -43,7 +44,7 @@ const inviteCache = new Map();
 const commands = [
   new SlashCommandBuilder()
     .setName("invites")
-    .setDescription("Check invites")
+    .setDescription("Check your invites")
     .addUserOption(opt =>
       opt.setName("user").setDescription("User").setRequired(false)
     ),
@@ -52,24 +53,6 @@ const commands = [
     .setName("leaderboard")
     .setDescription("Top inviters")
 ].map(c => c.toJSON());
-
-// ---------------- INVITE SYNC FUNCTION
-async function syncInvites() {
-  for (const guild of client.guilds.cache.values()) {
-    try {
-      const invites = await guild.invites.fetch();
-
-      inviteCache.set(
-        guild.id,
-        new Map(invites.map(i => [i.code, i.uses]))
-      );
-
-      console.log(`Synced invites for ${guild.name}`);
-    } catch (err) {
-      console.log("Invite sync failed:", guild.name);
-    }
-  }
-}
 
 // ---------------- REGISTER COMMANDS
 async function registerCommands() {
@@ -87,7 +70,25 @@ async function registerCommands() {
   }
 }
 
-// ---------------- READY
+// ---------------- SYNC INVITES (Render-safe)
+async function syncInvites() {
+  for (const guild of client.guilds.cache.values()) {
+    try {
+      const invites = await guild.invites.fetch();
+
+      inviteCache.set(
+        guild.id,
+        new Map(invites.map(i => [i.code, i.uses]))
+      );
+
+      console.log(`Synced invites for ${guild.name}`);
+    } catch (err) {
+      console.log("Invite sync failed:", guild.name);
+    }
+  }
+}
+
+// ---------------- READY EVENT
 client.once("clientReady", async () => {
   console.log(`Logged in as ${client.user.tag}`);
 
@@ -101,7 +102,7 @@ client.on("shardReconnecting", async () => {
   await syncInvites();
 });
 
-// ---------------- INVITE TRACKING
+// ---------------- INVITE TRACKING (JOIN)
 client.on("guildMemberAdd", async (member) => {
   const guild = member.guild;
 
@@ -129,14 +130,18 @@ client.on("guildMemberAdd", async (member) => {
 
   const data = await Invite.findOneAndUpdate(
     { userId: inviterId },
-    { $inc: { invites: 1 } },
+    { $inc: { regular: 1 } },
     { upsert: true, new: true }
   );
 
-  console.log(`${inviterId} now has ${data.invites}`);
+  console.log(`${inviterId} now has ${data.regular} regular invites`);
 
-  // ROLE AT 3 INVITES
-  if (data.invites === 3) {
+  // ROLE AT 3 INVITES (NET)
+  const fullData = await Invite.findOne({ userId: inviterId });
+
+  const net = (fullData?.regular || 0) - (fullData?.left || 0);
+
+  if (net === 3) {
     const role = guild.roles.cache.find(r => r.name === "Met Requirement");
     if (role) {
       try {
@@ -150,10 +155,19 @@ client.on("guildMemberAdd", async (member) => {
   }
 
   // LOG CHANNEL
-  const log = guild.channels.cache.find(c => c.name === "👤・user");
+  const log = guild.channels.cache.find(c => c.name === "invite-logs");
   if (log) {
     log.send(`${used.inviter.tag} invited ${member.user.tag}`);
   }
+});
+
+// ---------------- LEFT TRACKING
+client.on("guildMemberRemove", async (member) => {
+  await Invite.findOneAndUpdate(
+    { userId: member.id },
+    { $inc: { left: 1 } },
+    { upsert: true, new: true }
+  );
 });
 
 // ---------------- SLASH COMMANDS
@@ -164,22 +178,25 @@ client.on("interactionCreate", async (interaction) => {
     const user = interaction.options.getUser("user") || interaction.user;
 
     const data = await Invite.findOne({ userId: user.id });
-    const invites = data?.invites || 0;
+
+    const regular = data?.regular || 0;
+    const left = data?.left || 0;
+    const net = regular - left;
 
     return interaction.reply({
-      content: `${user.username} has **${invites} invites**`
+      content:
+`You currently have **${net} invites**.
+(${regular} regular, ${left} left)`
     });
   }
 
   if (interaction.commandName === "leaderboard") {
-    const top = await Invite.find().sort({ invites: -1 }).limit(10);
+    const top = await Invite.find().sort({ regular: -1 }).limit(10);
 
-    if (!top.length) {
-      return interaction.reply("No data yet.");
-    }
+    if (!top.length) return interaction.reply("No data yet.");
 
     const msg = top.map((u, i) =>
-      `**${i + 1}.** <@${u.userId}> — ${u.invites}`
+      `**${i + 1}.** <@${u.userId}> — ${u.regular}`
     ).join("\n");
 
     return interaction.reply({ content: msg });
@@ -191,7 +208,7 @@ client.login(process.env.TOKEN)
   .then(() => console.log("LOGIN SUCCESS"))
   .catch(err => console.log("LOGIN ERROR:", err));
 
-// ---------------- KEEP ALIVE
+// ---------------- HEARTBEAT
 setInterval(() => {
   console.log("Bot still running...");
 }, 5 * 60 * 1000);
