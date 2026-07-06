@@ -1,4 +1,3 @@
-require("dotenv").config();
 
 console.log("BOT STARTING...");
 
@@ -9,7 +8,8 @@ const {
   GatewayIntentBits,
   REST,
   Routes,
-  SlashCommandBuilder
+  SlashCommandBuilder,
+  EmbedBuilder
 } = require("discord.js");
 
 // ---------------- EXPRESS (keep alive for hosting)
@@ -157,10 +157,22 @@ client.on("guildMemberAdd", async (member) => {
     }
   }
 
-  // LOG CHANNEL (optional)
-  const log = guild.channels.cache.find(c => c.name === "👤・user");
-  if (log) {
-    log.send(`${used.inviter.tag} invited ${member.user.tag}`);
+  // ---------------- NEW INVITE LOG EMBED
+  const logChannel = guild.channels.cache.get("1523472189574217940");
+
+  if (logChannel) {
+    const embed = new EmbedBuilder()
+      .setTitle("📥 Invite Tracked")
+      .setColor(0x3498db)
+      .addFields(
+        { name: "Member Joined", value: `${member.user.tag}`, inline: false },
+        { name: "Invited By", value: `${used.inviter.tag}`, inline: false },
+        { name: "Invite Code", value: used.code || "unknown", inline: true },
+        { name: "Total Invites", value: `${data.regular}`, inline: true }
+      )
+      .setTimestamp();
+
+    logChannel.send({ embeds: [embed] });
   }
 });
 
@@ -213,7 +225,7 @@ client.login(process.env.TOKEN)
   .then(() => console.log("LOGIN SUCCESS"))
   .catch(err => console.log("LOGIN ERROR:", err));
 
-// ---------------- HEARTBEAT (optional debug)
+// ---------------- HEARTBEAT
 setInterval(() => {
   console.log("Bot still running...");
 }, 5 * 60 * 1000);
