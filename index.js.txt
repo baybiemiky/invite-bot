@@ -1,0 +1,91 @@
+const mongoose = require("mongoose");
+
+mongoose.connect(process.env.MONGO_URI)
+  .then(() => console.log("MongoDB connected"))
+  .catch(console.error);
+const express = require("express");
+
+const app = express();
+
+app.get("/", (req, res) => {
+  res.send("Bot is running!");
+});
+
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, () => {
+  console.log(`Web server running on port ${PORT}`);
+});
+const { Client, GatewayIntentBits } = require("discord.js");
+const fs = require("fs");
+
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildInvites
+  ]
+});
+
+const DATA_FILE = "./data.json";
+
+function loadData() {
+  try {
+    return JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function saveData(data) {
+  fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+}
+
+let data = loadData();
+const inviteCache = new Map();
+
+client.once("ready", async () => {
+  console.log(`Logged in as ${client.user.tag}`);
+
+  for (const guild of client.guilds.cache.values()) {
+    const invites = await guild.invites.fetch().catch(() => null);
+    if (invites) inviteCache.set(guild.id, invites);
+  }
+});
+
+client.on("guildMemberAdd", async (member) => {
+  const guild = member.guild;
+
+  const oldInvites = inviteCache.get(guild.id) || new Map();
+  const newInvites = await guild.invites.fetch().catch(() => null);
+  if (!newInvites) return;
+
+  inviteCache.set(guild.id, newInvites);
+
+  const used = newInvites.find(inv => {
+    const old = oldInvites.get(inv.code);
+    return old && inv.uses > old.uses;
+  });
+
+  if (!used || !used.inviter) return;
+
+  const id = used.inviter.id;
+
+  if (!data[id]) data[id] = { invites: 0 };
+
+  data[id].invites += 1;
+  saveData(data);
+
+  console.log(`${id} now has ${data[id].invites}`);
+
+  if (data[id].invites === 3) {
+    const role = guild.roles.cache.find(r => r.name === "Met Requirement");
+    if (!role) return;
+
+    guild.members.fetch(id).then(user => {
+      user.roles.add(role).catch(console.error);
+    });
+  }
+});
+
+client.login(process.env.TOKEN);
