@@ -30,6 +30,14 @@ const inviteSchema = new mongoose.Schema({
 
 const Invite = mongoose.model("Invite", inviteSchema);
 
+// ---------------- MEMBER INVITE MAP
+const memberInviteSchema = new mongoose.Schema({
+  memberId: { type: String, unique: true },
+  inviterId: String
+});
+
+const MemberInvite = mongoose.model("MemberInvite", memberInviteSchema);
+
 // ---------------- DISCORD CLIENT
 const client = new Client({
   intents: [
@@ -129,6 +137,13 @@ client.on("guildMemberAdd", async (member) => {
 
   const inviterId = used.inviter.id;
 
+  // SAVE WHO INVITED THIS MEMBER
+  await MemberInvite.findOneAndUpdate(
+    { memberId: member.id },
+    { inviterId: inviterId },
+    { upsert: true }
+  );
+
   const data = await Invite.findOneAndUpdate(
     { userId: inviterId },
     { $inc: { regular: 1 } },
@@ -142,7 +157,7 @@ client.on("guildMemberAdd", async (member) => {
 
   const net = (fullData?.regular || 0) - (fullData?.left || 0);
 
-  if (net === 3) {
+  if (net >= 3) {
     const role = guild.roles.cache.find(r => r.name === "Met Requirement");
 
     if (role) {
@@ -177,10 +192,30 @@ client.on("guildMemberAdd", async (member) => {
 
 // ---------------- LEFT TRACKING
 client.on("guildMemberRemove", async (member) => {
-  await Invite.findOneAndUpdate(
-    { userId: member.id },
+  // Find who invited the member that left
+  const record = await MemberInvite.findOne({
+    memberId: member.id
+  });
+
+  if (!record) {
+    console.log(`${member.user.tag} left, but no inviter record was found.`);
+    return;
+  }
+
+  // Increase the inviter's "left" count
+  const updated = await Invite.findOneAndUpdate(
+    { userId: record.inviterId },
     { $inc: { left: 1 } },
     { upsert: true, new: true }
+  );
+
+  // Remove the mapping since the member is gone
+  await MemberInvite.deleteOne({
+    memberId: member.id
+  });
+
+  console.log(
+    `${member.user.tag} left. ${record.inviterId} now has ${updated.left} left invites.`
   );
 });
 
